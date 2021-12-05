@@ -2,4 +2,4 @@ browser:
   path: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe
 
 filestorage:
-  path: C:\\Users\\cyber\\Desktop\\SG\\SG-mono\\src\\main\\resources\\FileStorage\\
+  path: C:\\Users\\cyber\\Desktop\\SG\\SG-mono\\src\\main\\resources\\filestorage\\

@@ -10,7 +10,6 @@ import org.openqa.selenium.chrome.ChromeDriver
 import org.openqa.selenium.chrome.ChromeOptions
 import org.springframework.core.env.Environment
 import org.springframework.stereotype.Service
-import java.net.URI
 import java.util.*
 import java.util.concurrent.ThreadLocalRandom
 import java.util.stream.Collectors
@@ -21,41 +20,28 @@ import kotlin.collections.HashSet
 class SitemapGeneratorService(
     private val env: Environment
 ) {
-    private fun analyzeRobotsTxt(page: String): Map<String, MutableList<String>> {
-        val robotsTXT: MutableMap<String, MutableList<String>> = HashMap()
-        val doc: Document = Jsoup.parse(page)
-        try {
-            val text: Element = doc.getElementsByTag("pre").get(0)
-            val list: List<String> = text.text().split("\n").toList()
 
-            for (line in list) {
-                val two = line.split(": ".toRegex()).toTypedArray()
-                if (two.size == 2) {
-                    var values = robotsTXT[two[0]]
-                    if (values == null) values = ArrayList()
-                    values.add(two[1])
-                    robotsTXT[two[0].lowercase(Locale.ROOT)] = values
-                }
-            }
-            robotsTXT.forEach { (key: String, value: List<String>) ->
-                println(
-                    "KEY: $key VALUE: $value"
-                )
-            }
+    private fun getSitemapsFromRobots(page: String): MutableList<String>? =
+        runCatching {
+            val listOfSitemaps = mutableListOf<String>()
+            val listOfLines: List<String> =
+                Jsoup
+                    .parse(page)
+                    .getElementsByTag("pre")
+                    .get(0)
+                    .text()
+                    .split("\n")
 
-            val crawlVals: List<String>? = robotsTXT["crawl-delay"]
-            if (crawlVals != null) {
-                for (s in crawlVals) {
-                    if (s.toInt() > CRAWL_DELAY) {
-                        CRAWL_DELAY = s.toInt()
-                    }
-                }
+            for (line in listOfLines) {
+                val nameValuePair = line.split(": ")
+                if (nameValuePair[0].lowercase(Locale.getDefault()) == "sitemap")
+                    listOfSitemaps.add(nameValuePair[1])
+
             }
-        } catch (e: Exception) {
-            println()
-        }
-        return robotsTXT
-    }
+            listOfSitemaps
+        }.onFailure {
+        }.getOrNull()
+
 
     private fun generateMapFromSitemap(driver: WebDriver, sitemaps: List<String>, site: String): Set<String> {
         val map: MutableSet<String> = HashSet()
@@ -68,7 +54,7 @@ class SitemapGeneratorService(
                     val doc: Document = Jsoup.parse(xmlText)
 
 
-                    val elements: Elements = doc.getElementsContainingOwnText(site!!)
+                    val elements: Elements = doc.getElementsContainingOwnText(site)
                     for (e in elements) {
                         val text: String = e.text()
                         val textLength = text.length
@@ -94,55 +80,82 @@ class SitemapGeneratorService(
         return map
     }
 
-    private fun generateMapRecursive(driver: WebDriver, baseURL: String, map: MutableSet<String>, site: String): Set<String> {
-        val js: JavascriptExecutor = driver as JavascriptExecutor
-        driver.get(baseURL)
+    private fun generateMapFromSitemap1(driver: WebDriver, sitemaps: List<String>, site: String): Set<String> {
+        val map = HashSet<String>()
 
-        js.executeScript("window.scrollTo(0, document.body.scrollHeight);")
+        class Local {
+            tailrec fun generateSitemapRecursive(driver: WebDriver, sitemaps: List<String>) {
+                val hiddenSitemaps: MutableList<String> = ArrayList()
+                for (sitemap in sitemaps) {
+                    val elements: Elements = Jsoup
+                        .parse(
+                            getPageWithTimeout(driver, sitemap)
+                        ).getElementsContainingOwnText(site)
 
-        val html: String = driver.pageSource
-        val doc: Document = Jsoup.parse(html)
-        val links: List<Element> = doc.getElementsByTag("a")
-        try {
-            // Выбираем только уникальные ссылки, нам же не нужно обходить одну и ту же страницу несколько раз, так?
-            val uniqueLinks = links
-                .stream()
-                .map { it.attr("href") }
-                .filter { it.startsWith("/") }
-                .map { link: Any ->
-                    (site + link).replace(
-                        "://",
-                        "321TEMP123"
-                    ).replace("//", "/").replace("321TEMP123", "://")
-                }
-                .collect(Collectors.toSet())
+                    for (element in elements) {
+                        val link: String = element.text()
 
-            for (link in uniqueLinks) {
-                try {
-                    if (!map.contains(link)) {
-                        URL_COUNTER++
-                        map.add(link)
-                        println("№" + URL_COUNTER + " processing: " + link)
-                        val timeout = ThreadLocalRandom.current().nextInt(CRAWL_DELAY, CRAWL_DELAY * 2 + 1) * 1000
-                        Thread.sleep(timeout.toLong())
-                        try {
-                            generateMapRecursive(driver, link, map, site)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
+                        if(link.endsWith(".xml")) hiddenSitemaps.add(link)
+                        else if((!
+                            link
+                                .subSequence(
+                                    link.lastIndexOf("."),
+                                    link.length
+                                )
+                                .matches(Regex("^\\.[^.]+\$"))
+
+                        )) map.add(link)
                     }
-                } catch (e: Exception) {
-                    println("Invalid URL: $link")
-                    e.printStackTrace()
                 }
+                if (hiddenSitemaps.size != 0) generateSitemapRecursive(driver, hiddenSitemaps)
             }
-        } catch (e: Exception) {
-            println("Some shitty urls out there")
-            e.printStackTrace()
         }
-        URL_COUNTER = 0
+
+        val loc = Local()
+        loc.generateSitemapRecursive(driver, sitemaps)
         return map
     }
+
+    private fun generateMapRecursive(
+        driver: WebDriver,
+        baseURL: String,
+        map: HashSet<String>,
+        site: String
+    ): HashSet<String>? =
+        runCatching {
+            val js: JavascriptExecutor = driver as JavascriptExecutor
+            driver.get(baseURL)
+            js.executeScript("window.scrollTo(0, document.body.scrollHeight);")
+
+            val uniqueLinks =
+                Jsoup
+                    .parse(driver.pageSource)
+                    .getElementsByTag("a")
+                    .asSequence()
+                    .map { it.attr("href") }
+                    .filter { it.startsWith("/") }
+                    .map { "${site.removePrefix("/")}$it" }
+                    .distinct()
+                    .toHashSet()
+
+            for (link in uniqueLinks) {
+                runCatching {
+                    if (!map.contains(link)) {
+                        map.add(link)
+                        println("processing: " + link)
+                        val timeout = ThreadLocalRandom.current().nextInt(CRAWL_DELAY, CRAWL_DELAY * 2 + 1) * 1000
+                        Thread.sleep(timeout.toLong())
+                        runCatching {
+                            generateMapRecursive(driver, link, map, site)
+                        }
+                    }
+                }
+            }
+            map
+        }.onFailure {
+        }.getOrNull()
+
+
 
     private fun createDriver(): WebDriver {
         System.setProperty("webdriver.chrome.driver", "chromedriver.exe")
@@ -164,7 +177,7 @@ class SitemapGeneratorService(
         var map: Set<String>? = null
         try {
             val page = getPageWithTimeout(driver, site + "robots.txt")
-            sitemaps = analyzeRobotsTxt(page)["sitemap"]
+            sitemaps = getSitemapsFromRobots(page)
         } catch (e: Exception) {
 
         } finally {
@@ -178,7 +191,6 @@ class SitemapGeneratorService(
 
     companion object {
         private var CRAWL_DELAY = 15
-        private var URL_COUNTER = 0
 
         private fun getPageWithTimeout(driver: WebDriver, path: String): String {
             driver.get(path)

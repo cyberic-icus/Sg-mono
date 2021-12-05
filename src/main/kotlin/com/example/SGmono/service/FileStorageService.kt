@@ -28,7 +28,8 @@ class FileStorageService(
     }
 
     fun writeToFile(data: String, fileName: String) {
-        BufferedWriter(FileWriter(fileName)
+        BufferedWriter(
+            FileWriter(fileName)
         ).let {
             it.write(data)
             it.close()

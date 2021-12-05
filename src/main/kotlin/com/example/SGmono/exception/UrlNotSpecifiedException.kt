@@ -1,3 +1,3 @@
 package com.example.SGmono.exception
 
-class UrlNotSpecifiedException(message: String): Exception(message)
+class UrlNotSpecifiedException(message: String) : Exception(message)
